@@ -1,0 +1,73 @@
+# Каждый день обновляет данные сайта и публикует его на GitHub Pages.
+# Запустить вручную: вкладка Actions -> «Обновление сайта» -> Run workflow.
+name: Обновление сайта
+
+on:
+  schedule:
+    - cron: "17 6 * * *"   # каждый день в 06:17 UTC = 10:17 по Самаре
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Получить файлы
+        uses: actions/checkout@v6
+
+      - name: Проверить настройки Pages
+        uses: actions/configure-pages@v5
+
+      - name: Обновить данные
+        run: |
+          python3 refresh_sports.py || echo "::warning::refresh_sports.py завершился с ошибкой, оставлены сохранённые данные"
+          python3 refresh_match_data.py || echo "::warning::refresh_match_data.py завершился с ошибкой, оставлены сохранённые данные"
+          python3 refresh_schedule.py --no-open || echo "::warning::refresh_schedule.py завершился с ошибкой, оставлены сохранённые данные"
+
+      - name: Собрать сайт
+        run: |
+          mkdir -p _site
+          cp index.html sports-data.js match-data.js photos-data.js schedule.js red-zone-hero.jpg _site/
+          # Chart.js кладём рядом с сайтом: cdnjs работает через Cloudflare, а его замедляют в России
+          CHART=https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js
+          if curl -fsSL --retry 3 -o _site/chart.umd.js "$CHART"; then
+            sed -i "s#$CHART#chart.umd.js#g" _site/index.html
+          else
+            rm -f _site/chart.umd.js
+            echo "::warning::Не удалось скачать Chart.js, осталась ссылка на CDN"
+          fi
+
+      - name: Сохранить данные в репозиторий
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sports-data.js match-data.js schedule.js
+          if git diff --cached --quiet; then
+            echo "Данные не изменились"
+          else
+            git commit -q -m "Обновление данных $(date -u +%Y-%m-%d)"
+            git push -q || echo "::warning::Не удалось сохранить данные в репозиторий, сайт всё равно будет опубликован"
+          fi
+
+      - name: Загрузить сайт
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+      - name: Опубликовать на GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
